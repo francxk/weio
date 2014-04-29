@@ -1,19 +1,20 @@
 from weioLib.weioIO import *
-from weioLib.weioUserApi import shared
 import json
 
 from sockjs.tornado import SockJSConnection
 
 from weioLib.weioParser import weioSpells
 
-connections = set()
+from weioLib import weioRunnerGlobals
 
 class WeioHandler(SockJSConnection):
+    def __init__(self, *args, **kwargs):
+        SockJSConnection.__init__(self, *args, **kwargs)
+        self.connections = weioRunnerGlobals.weioConnections
 
     def on_open(self, data):
-        global connections
         # Add client to the clients list
-        connections.add(self)
+        self.connections.add(self)
 
         # collect client ip address and user machine info
         # print self.request to see all available info on user connection
@@ -31,7 +32,7 @@ class WeioHandler(SockJSConnection):
         #else :
         #    print "*SYSOUT* Client with IP address : " + self.ip + " connected to server!"
         #print self.request.headers
-        connection_closed = False
+        self.connection_closed = False
 
     def emit(self, instruction, rq):
         data = {}
@@ -44,7 +45,6 @@ class WeioHandler(SockJSConnection):
         self.serve(json.loads(data))
 
     def serve(self, data) :
-        global connections
         command = data["request"]
         #print data
         # treat requests using dictionaries
@@ -61,19 +61,11 @@ class WeioHandler(SockJSConnection):
                     try:
                         self.send(json.dumps(result))
                     except:
-                        connection_closed = True
+                        self.connection_closed = True
 
     def on_close(self):
-        global connections
-        connection_closed = True
+        self.connection_closed = True
         print "*SYSOUT* Client with IP address : " + self.ip + " disconnected from server!"
         # Remove client from the clients list and broadcast leave message
-        connections.remove(self)
+        self.connections.remove(self)
 
-#        if self in connections:
-#            connections.remove(self)
-#            if not(self.userAgent is None):
-#                print "*SYSOUT* " + self.userAgent + " with IP address : " + self.ip + " disconnected from server!"
-#            else:
-#                print "*SYSOUT* Client with IP address : " + self.ip + " disconnected from server!"
-        #print "Websocket closed"

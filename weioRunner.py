@@ -1,17 +1,18 @@
 #!/usr/bin/python -u
 from tornado import web, ioloop, options, websocket
 
-import sys,os,logging, platform, json, signal
+import sys,os,logging, platform, json, signal, datetime
 
-import threading
+import multiprocessing
 
-from weioLib.weioUserApi import *
-from weioLib.weioIO import *
+import functools
+import subprocess
+
+from weioLib import weioUserApi
+from weioLib import weioIO
 
 # JS to PYTHON handler
 from handlers.weioJSPYHandler import WeioHandler
-# Connected clients
-from handlers.weioJSPYHandler import connections
 
 # IMPORT BASIC CONFIGURATION FILE ALL PATHS ARE DEFINED INSIDE
 from weioLib import weio_config
@@ -19,9 +20,22 @@ from weioLib import weio_config
 # IMPORT WEIO FILE SUPPORT
 from weioLib import weioFiles
 
-from sockjs.tornado import SockJSRouter
+from sockjs.tornado import SockJSRouter, SockJSConnection
 
-################################################################ HTTP SERVER HANDLER
+# Import globals for user Tornado
+from weioLib import weioRunnerGlobals
+
+# Global list of user processes
+userProcessList = []
+
+from weioLib import weioGpio
+from weioLib import weioIO
+
+import time
+
+###
+# HTTP SERVER HANDLER
+###
 # This is user project index.html
 class WeioIndexHandler(web.RequestHandler):
     def get(self):
@@ -39,21 +53,134 @@ class WeioIndexHandler(web.RequestHandler):
         self.render(path, error="")
 
 
+###
+# WeIO User Even Handler
+###
+class UserControl():
+    def __init__(self):
+        self.errLine = 0
+        self.errObject = []
+        self.errReason = ""
+
+        # Variable to store SockJSConnection calss instance
+        # in order to call it's send() method from MainProgram thread
+        CONSOLE = None
+
+        self.connection = None
+
+        # Ask this variable is player is playing at this moment
+        self.playing = False
+
+        # User Project main module (main.py)
+        self.userMain = self.loadUserProjectMain()
+        
+        # List of user processes
+        self.userProcessList = []
+
+    def setConnectionObject(self, connection):
+        # captures only the last connection
+        self.connection = connection
+
+    def send(self, data):
+        # if no connection object (editor is not opened) than data for editor is lost
+        if not(self.connection is None):
+            self.connection.send(data)
+
+    def start(self, rq={'request':'play'}):
+        print "STARTING USER PROCESSES"
+
+        if (weioRunnerGlobals.WEIO_SERIAL_LINKED == False):
+            weioIO.gpio.init()
+
+
+            # Launching threads
+            for key in weioUserApi.attach.procs :
+                print key
+                p = multiprocessing.Process(target=weioUserApi.attach.procs[key].procFnc, args=weioUserApi.attach.procs[key].procArgs)
+                p.daemon = True
+                # Add it to the global list of user processes
+                self.userProcessList.append(p)
+                # Start it
+                p.start()
+
+    def stop(self):
+        print "STOPPING USER PROCESSES"
+        for p in self.userProcessList:
+            print p 
+            p.terminate()
+            p.join()
+            self.userProcessList.remove(p)
+
+        # Reset user attached elements
+        weioUserApi.attach.procs = {}
+        weioUserApi.attach.events = {}
+        weioUserApi.attach.ins = {}
+        if (weioRunnerGlobals.WEIO_SERIAL_LINKED == True):
+            weioIO.gpio.reset()
+
+        # Finally stop UPER
+        #logging.warning('Shutdown WeIO coprocessor')
+        #weioIO.stopWeio()
+
+    def userPlayer(self, fd, events):
+        print "Inside userControl()"
+
+	if (fd is not None):
+            cmd = os.read(fd,128)
+            print "Received: " + cmd
+        else:
+            return
+
+        if (cmd == "*START*"):
+            # Re-load user main (in case it changed)
+            self.userMain = self.loadUserProjectMain()
+
+            # Calling user setup() if present
+            if "setup" in vars(self.userMain):
+                self.userMain.setup()
+
+            # Then start processes from it
+            self.start()
+        elif (cmd == "*STOP*"):
+            self.stop()
+
+    def loadUserProjectMain(self):
+        confFile = weio_config.getConfiguration()
+        
+        # Get the last name of project and run it
+        projectModule = confFile["user_projects_path"].replace('/', '.') + confFile["last_opened_project"].replace('/', '.') + "main"
+        print projectModule
+        
+        # Import userMain from local module
+        userMain = __import__(projectModule, fromlist=[''])
+
+        return userMain
+
+
+# User Tornado signal handler
+def signalHandler(userControl, sig, frame):
+        #logging.warning('Caught signal: %s', sig)
+        print "CALLING STOP IF PRESENT"
+        if "stop" in vars(userControl.userMain):
+            logging.warning('Calling user defined stop function')
+            userControl.userMain.stop()
+        sys.exit(0)
+
+
 if __name__ == '__main__':
+    ###
+    # Initialize global USER API instances
+    ###
+    weioUserApi.attach =  weioUserApi.WeioAttach()
+    weioUserApi.shared =  weioUserApi.WeioSharedVar()
+    weioUserApi.console =  weioUserApi.WeioPrint()
 
     confFile = weio_config.getConfiguration()
-
-    # Get the last name of project and run it
-    projectModule = "userFiles."+confFile["last_opened_project"].replace('/', '.') + "main"
-
-    # 2.6+ WAY TO IMPORT FROM LOCAL
-    main = __import__(projectModule, fromlist=[''])
-
     # set python working directory
     #os.chdir("userFiles/"+sys.argv[1])
     myPort = confFile["userAppPort"]
     options.define("port", default=myPort, type=int)
-    
+
     apiRouter = SockJSRouter(WeioHandler, '/api')
 
     # Instantiate all handlers for user Tornado
@@ -64,35 +191,38 @@ if __name__ == '__main__':
     app.listen(options.options.port, "0.0.0.0")
 
     logging.info(" [*] Listening on 0.0.0.0:" + str(options.options.port))
-    print "*SYSOUT*Websocket is created at localhost:" + str(options.options.port) + "/api"
+    print "*SYSOUT* User API Websocket is created at localhost:" + str(options.options.port) + "/api"
 
-    # CALLING SETUP IF PRESENT
-    if "setup" in vars(main):
-        main.setup()
+    ###
+    # Construct global gpio object
+    # Must be constructed here and nowhere else, because it creates UNIQUE UPER object
+    ###
+    weioIO.gpio = weioGpio.WeioGpio()
+    #weioIO.digitalWrite(20, weioUserApi.LOW)
+    #time.sleep(1)
+    #weioIO.digitalWrite(20, weioUserApi.HIGH)
 
-    # Launching threads
-    for key in attach.procs :
-        print key
-        #thread.start_new_thread(attach.procs[key].procFnc, attach.procs[key].procArgs)
-        t = threading.Thread(target=attach.procs[key].procFnc, args=attach.procs[key].procArgs)
-        t.daemon = True
-        t.start()
+    # Initialize globals for the user Tornado
+    weioRunnerGlobals.DECLARED_PINS = weioIO.gpio.declaredPins
 
-    ########################################################## SIGNAL HANDLER
-    def sig_handler(sig, frame):
-        logging.warning('Caught signal: %s', sig)
-        # CALLING STOP IF PRESENT
-        if "stop" in vars(main):
-            logging.warning('Calling user defined stop function')
-            main.stop()
-        logging.warning('Shutdown WeIO coprocessor')
-        stopWeio()
-        logging.warning('Shutdown WeIO user server')
-        ioloop.IOLoop.instance().stop()
+    # Create a userControl object
+    userControl = UserControl()
 
-    ########################################################## INIT SIGNAL HANDLERS
+    # Install signal handlers
+    signalCallback = functools.partial(signalHandler, userControl)
+    signal.signal(signal.SIGTERM, signalCallback)
+    signal.signal(signal.SIGINT, signalCallback)
 
-    signal.signal(signal.SIGTERM, sig_handler)
-    signal.signal(signal.SIGINT, sig_handler)
+    # Create ioloop
+    ioloop = ioloop.IOLoop.instance()
 
-    ioloop.IOLoop.instance().start()
+    # Add user control via stdin pipe
+    ioloop.add_handler(sys.stdin.fileno(), userControl.userPlayer, ioloop.READ)
+
+    # Before starting ioloop, stop led blinking,
+    # which will light up correct LED and give information to the user
+    # that all is ready
+    if (platform.machine() == 'mips'):
+        subprocess.call(["/etc/init.d/led_blink", "stop"])
+
+    ioloop.start()
