@@ -61,6 +61,7 @@ class UserControl():
         self.errLine = 0
         self.errObject = []
         self.errReason = ""
+        self.lastCalledProjectPath = None
 
         # Variable to store SockJSConnection calss instance
         # in order to call it's send() method from MainProgram thread
@@ -89,6 +90,9 @@ class UserControl():
     def start(self, rq={'request':'play'}):
         print "STARTING USER PROCESSES"
 
+        if (len(self.userProcessList)!=0):
+            self.stop()
+
         if (weioIO.gpio != None):
             if (weioRunnerGlobals.WEIO_SERIAL_LINKED == False):
                 weioIO.gpio.init()
@@ -109,23 +113,23 @@ class UserControl():
 
         for p in self.userProcessList:
             print "KILLING PROCESS PID", p.pid
-            #p.terminate()
-            #p.join()
-            os.kill(p.pid, 9) # very violent
+            p.terminate()
+            p.join(0.5)
+            try :
+                # If job is not properly done than kill it with bazooka
+                os.kill(p.pid, 9) # very violent
+            except:
+                pass
             self.userProcessList.remove(p)
-
-        # Reset user attached elements
-        weioUserApi.attach.procs = {}
-        weioUserApi.attach.events = {}
-        weioUserApi.attach.ins = {}
 
         if (weioIO.gpio != None):
             if (weioRunnerGlobals.WEIO_SERIAL_LINKED == True):
                 weioIO.gpio.reset()
 
-        # Finally stop UPER
-        #logging.warning('Shutdown WeIO coprocessor')
-        #weioIO.stopWeio()
+        # Reset user attached elements
+        weioUserApi.attach.procs = {}
+        weioUserApi.attach.events = {}
+        weioUserApi.attach.ins = {}
 
     def userPlayer(self, fd, events):
         print "Inside userControl()"
@@ -138,10 +142,7 @@ class UserControl():
 
         if (cmd == "*START*"):
             # Re-load user main (in case it changed)
-            if (self.userMain == None):
-                self.userMain = self.loadUserProjectMain()
-            else :
-                reload(self.userMain)
+            self.userMain = self.loadUserProjectMain()
 
             # Calling user setup() if present
             if "setup" in vars(self.userMain):
@@ -158,15 +159,25 @@ class UserControl():
         # Get the last name of project and run it
         projectModule = confFile["user_projects_path"].replace('/', '.') + confFile["last_opened_project"].replace('/', '.') + "main"
         print projectModule
-
-        # Import userMain from local module
-        try :
-            userMain = __import__(projectModule, fromlist=[''])
-            return userMain
-        except :
-            print "MODULE CAN'T BE LOADED"
-            return None
-
+        
+        result = None
+        
+        if (self.lastCalledProjectPath == projectModule):
+            print "RELOADING"
+            result = reload(self.userMain)
+        else :
+            print "NEW IMPORT"
+            # Import userMain from local module
+            try :
+                userMain = __import__(projectModule, fromlist=[''])
+                result = userMain
+            except :
+                print "MODULE CAN'T BE LOADED"
+                result = None
+                
+        self.lastCalledProjectPath = projectModule
+        return result
+        
 # User Tornado signal handler
 def signalHandler(userControl, sig, frame):
         #logging.warning('Caught signal: %s', sig)

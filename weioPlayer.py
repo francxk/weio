@@ -115,13 +115,11 @@ class WeioPlayer():
         config = weio_config.getConfiguration()
 
         # stop if process is already running
-        #self.stop()
+        self.stop()
 
         data = {}
         up = config["user_projects_path"]
         lp = config["last_opened_project"]
-
-        processName = './weioRunner.py'
 
         # check if user project exists before launching
         if (weioFiles.checkIfFileExists(up+lp+"main.py")):
