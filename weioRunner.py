@@ -73,7 +73,7 @@ class UserControl():
 
         # User Project main module (main.py)
         self.userMain = self.loadUserProjectMain()
-        
+
         # List of user processes
         self.userProcessList = []
 
@@ -89,10 +89,9 @@ class UserControl():
     def start(self, rq={'request':'play'}):
         print "STARTING USER PROCESSES"
 
-        if (weioRunnerGlobals.WEIO_SERIAL_LINKED == False):
-            if (weioIO.gpio != None):
+        if (weioIO.gpio != None):
+            if (weioRunnerGlobals.WEIO_SERIAL_LINKED == False):
                 weioIO.gpio.init()
-
 
             # Launching threads
             for key in weioUserApi.attach.procs :
@@ -103,21 +102,25 @@ class UserControl():
                 self.userProcessList.append(p)
                 # Start it
                 p.start()
+                print "STARTING PROCESS PID", p.pid
 
     def stop(self):
         print "STOPPING USER PROCESSES"
+
         for p in self.userProcessList:
-            print p 
-            p.terminate()
-            p.join()
+            print "KILLING PROCESS PID", p.pid
+            #p.terminate()
+            #p.join()
+            os.kill(p.pid, 9) # very violent
             self.userProcessList.remove(p)
 
         # Reset user attached elements
         weioUserApi.attach.procs = {}
         weioUserApi.attach.events = {}
         weioUserApi.attach.ins = {}
-        if (weioRunnerGlobals.WEIO_SERIAL_LINKED == True):
-            if (weioIO.gpio != None):
+
+        if (weioIO.gpio != None):
+            if (weioRunnerGlobals.WEIO_SERIAL_LINKED == True):
                 weioIO.gpio.reset()
 
         # Finally stop UPER
@@ -127,7 +130,7 @@ class UserControl():
     def userPlayer(self, fd, events):
         print "Inside userControl()"
 
-	if (fd is not None):
+        if (fd is not None):
             cmd = os.read(fd,128)
             print "Received: " + cmd
         else:
@@ -135,7 +138,10 @@ class UserControl():
 
         if (cmd == "*START*"):
             # Re-load user main (in case it changed)
-            self.userMain = self.loadUserProjectMain()
+            if (self.userMain == None):
+                self.userMain = self.loadUserProjectMain()
+            else :
+                reload(self.userMain)
 
             # Calling user setup() if present
             if "setup" in vars(self.userMain):
@@ -148,16 +154,18 @@ class UserControl():
 
     def loadUserProjectMain(self):
         confFile = weio_config.getConfiguration()
-        
+
         # Get the last name of project and run it
         projectModule = confFile["user_projects_path"].replace('/', '.') + confFile["last_opened_project"].replace('/', '.') + "main"
         print projectModule
-        
+
         # Import userMain from local module
-        userMain = __import__(projectModule, fromlist=[''])
-
-        return userMain
-
+        try :
+            userMain = __import__(projectModule, fromlist=[''])
+            return userMain
+        except :
+            print "MODULE CAN'T BE LOADED"
+            return None
 
 # User Tornado signal handler
 def signalHandler(userControl, sig, frame):
